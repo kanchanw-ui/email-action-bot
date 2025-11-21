@@ -1,0 +1,157 @@
+{
+  "name": "Email Understanding & Action Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "readStatus": "unread"
+        }
+      },
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "prompt": "Analyze the following email and classify it into one of these categories: [Invoice, Leave Request, Project Update, Meeting Request, Support Ticket, Spam, Other].\n\nAlso provide a brief justification and a suggested action.\n\nEmail Subject: {{$json[\"subject\"]}}\nEmail Body: {{$json[\"snippet\"]}}\n\nReturn JSON: {\"classification\": \"...\", \"justification\": \"...\", \"action\": \"...\"}"
+      },
+      "name": "LLM Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{$json[\"classification\"]}}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "Invoice"
+            },
+            {
+              "value2": "Leave Request"
+            },
+            {
+              "value2": "Support Ticket"
+            }
+          ]
+        }
+      },
+      "name": "Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "finance-alerts",
+        "text": "={{$json[\"justification\"]}} - Action: {{$json[\"action\"]}}",
+        "attachments": []
+      },
+      "name": "Slack - Finance",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        850,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "1234567890abcdef",
+        "range": "A:C",
+        "options": {}
+      },
+      "name": "Google Sheets - HR",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "support-tickets",
+        "text": "New Ticket: {{$json[\"justification\"]}}"
+      },
+      "name": "Slack - Support",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [
+        850,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "LLM Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Analysis": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Slack - Finance",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Sheets - HR",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack - Support",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
