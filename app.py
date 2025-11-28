@@ -3,6 +3,9 @@ import os
 import json
 import smtplib
 import google.generativeai as genai
+import imaplib
+import email
+from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
@@ -47,13 +50,35 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- Configuration Management ---
+CONFIG_FILE = "user_config.json"
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_config(data):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(data, f)
+
+config = load_config()
+
 # --- Session State Initialization ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'api_key' not in st.session_state:
-    st.session_state.api_key = os.getenv("GOOGLE_API_KEY", "")
+    st.session_state.api_key = config.get('api_key', os.getenv("GOOGLE_API_KEY", ""))
+if 'sender_email' not in st.session_state:
+    st.session_state.sender_email = config.get('sender_email', "")
+if 'sender_password' not in st.session_state:
+    st.session_state.sender_password = config.get('sender_password', "")
 if 'dept_emails' not in st.session_state:
-    st.session_state.dept_emails = {
+    st.session_state.dept_emails = config.get('dept_emails', {
         "Finance": "",
         "HR": "",
         "IT Support": "",
@@ -62,9 +87,53 @@ if 'dept_emails' not in st.session_state:
         "Legal": "",
         "Operations": "",
         "Executive": ""
-    }
+    })
 
 # --- Helper Functions ---
+
+def fetch_emails(username, password, limit=5):
+    try:
+        # Connect to Gmail IMAP
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(username, password)
+        mail.select("inbox")
+
+        # Search for recent emails
+        _, search_data = mail.search(None, "ALL")
+        mail_ids = search_data[0].split()
+        
+        # Get last 'limit' emails
+        latest_email_ids = mail_ids[-limit:]
+        emails = []
+
+        for e_id in reversed(latest_email_ids):
+            _, msg_data = mail.fetch(e_id, "(RFC822)")
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    
+                    # Decode Subject
+                    subject, encoding = decode_header(msg["Subject"])[0]
+                    if isinstance(subject, bytes):
+                        subject = subject.decode(encoding if encoding else "utf-8")
+                    
+                    # Get Body
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            content_type = part.get_content_type()
+                            if content_type == "text/plain":
+                                body = part.get_payload(decode=True).decode()
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode()
+                        
+                    emails.append({"subject": subject, "body": body})
+        
+        mail.logout()
+        return True, emails
+    except Exception as e:
+        return False, str(e)
 
 def send_email(sender_email, sender_password, recipient_email, subject, body):
     try:
@@ -116,22 +185,31 @@ def main_app():
                 genai.configure(api_key=st.session_state.api_key)
                 
                 try:
-                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                    gemini_models = [m for m in models if 'gemini' in m]
-                    if not gemini_models: gemini_models = ["models/gemini-1.5-flash"]
-                    st.session_state.model_name = st.selectbox("Select Model", gemini_models, index=0)
-                except:
+                    # List only Gemini models that support generateContent
+                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and m.name.startswith('models/gemini-')]
+                    # Ensure at least a default model is available
+                    if not models:
+                        models = ["models/gemini-1.5-flash"]
+                    st.session_state.model_name = st.selectbox("Select Model", models, index=0)
+                except Exception as e:
+                    st.error(f"Failed to list models: {e}")
                     st.session_state.model_name = "models/gemini-1.5-flash"
-
-        with st.expander("📧 Gmail Integration", expanded=True):
-            st.info("👉 **Note:** Use a **Google App Password**. [Guide here](https://support.google.com/accounts/answer/185833)")
-            sender_email = st.text_input("Your Gmail Address")
-            sender_password = st.text_input("App Password (16 chars)", type="password")
 
         with st.expander("🏢 Department Setup", expanded=True):
             st.markdown("Map departments to email addresses for auto-forwarding.")
             for dept in st.session_state.dept_emails.keys():
                 st.session_state.dept_emails[dept] = st.text_input(f"{dept} Email", value=st.session_state.dept_emails[dept], placeholder=f"{dept.lower().replace(' ', '')}@company.com")
+
+        st.markdown("---")
+        if st.button("💾 Save Settings"):
+            config_data = {
+                "api_key": st.session_state.api_key,
+                "sender_email": st.session_state.sender_email,
+                "sender_password": st.session_state.sender_password,
+                "dept_emails": st.session_state.dept_emails
+            }
+            save_config(config_data)
+            st.success("Settings saved to user_config.json!")
 
         if st.button("Logout"):
             st.session_state.logged_in = False
@@ -148,64 +226,98 @@ def main_app():
     with col_left:
         st.subheader("📥 Incoming Email")
         
-        # 10 Examples
-        examples = {
-            "Select an example...": {"subject": "", "body": ""},
-            "1. Invoice (Finance)": {
-                "subject": "Invoice #2024-99 for Design Services", 
-                "body": "Please find attached the invoice for $2,000. Payment due in 15 days."
-            },
-            "2. Sick Leave (HR)": {
-                "subject": "Sick Leave - John Doe", 
-                "body": "I am feeling unwell and will be taking a sick day today. I'll check emails periodically."
-            },
-            "3. Laptop Issue (IT)": {
-                "subject": "Blue Screen Error", 
-                "body": "My laptop keeps crashing with a blue screen. I cannot work. Please assist ASAP."
-            },
-            "4. Sales Lead (Sales)": {
-                "subject": "Inquiry about Enterprise Plan", 
-                "body": "We are interested in purchasing 500 licenses for your software. Can we get a quote?"
-            },
-            "5. Partnership (Marketing)": {
-                "subject": "Collaboration Opportunity", 
-                "body": "We would like to feature your product in our upcoming tech conference. Let's discuss sponsorship."
-            },
-            "6. Contract Review (Legal)": {
-                "subject": "NDA for Project X", 
-                "body": "Attached is the NDA for the new vendor. Please review and sign by EOD."
-            },
-            "7. Office Supplies (Operations)": {
-                "subject": "Printer Paper Low", 
-                "body": "We are out of A4 paper in the 2nd floor copy room. Please restock."
-            },
-            "8. Quarterly Report (Executive)": {
-                "subject": "Q3 Financial Results", 
-                "body": "Here is the summary of Q3 performance. Revenue is up 20%. Board meeting is next week."
-            },
-            "9. Job Application (HR)": {
-                "subject": "Application: Senior Dev - Alice", 
-                "body": "I am applying for the Senior Developer role. My resume is attached."
-            },
-            "10. Refund Request (Finance)": {
-                "subject": "Refund for Order #12345", 
-                "body": "I was charged twice for my order. Please refund the duplicate charge of $50."
+        # Tabs for Source
+        tab1, tab2 = st.tabs(["📂 Examples", "🔴 Live Gmail"])
+        
+        with tab1:
+            # 10 Examples
+            examples = {
+                "Select an example...": {"subject": "", "body": ""},
+                "1. Invoice (Finance)": {
+                    "subject": "Invoice #2024-99 for Design Services", 
+                    "body": "Please find attached the invoice for $2,000. Payment due in 15 days."
+                },
+                "2. Sick Leave (HR)": {
+                    "subject": "Sick Leave - John Doe", 
+                    "body": "I am feeling unwell and will be taking a sick day today. I'll check emails periodically."
+                },
+                "3. Laptop Issue (IT)": {
+                    "subject": "Blue Screen Error", 
+                    "body": "My laptop keeps crashing with a blue screen. I cannot work. Please assist ASAP."
+                },
+                "4. Sales Lead (Sales)": {
+                    "subject": "Inquiry about Enterprise Plan", 
+                    "body": "We are interested in purchasing 500 licenses for your software. Can we get a quote?"
+                },
+                "5. Partnership (Marketing)": {
+                    "subject": "Collaboration Opportunity", 
+                    "body": "We would like to feature your product in our upcoming tech conference. Let's discuss sponsorship."
+                },
+                "6. Contract Review (Legal)": {
+                    "subject": "NDA for Project X", 
+                    "body": "Attached is the NDA for the new vendor. Please review and sign by EOD."
+                },
+                "7. Office Supplies (Operations)": {
+                    "subject": "Printer Paper Low", 
+                    "body": "We are out of A4 paper in the 2nd floor copy room. Please restock."
+                },
+                "8. Quarterly Report (Executive)": {
+                    "subject": "Q3 Financial Results", 
+                    "body": "Here is the summary of Q3 performance. Revenue is up 20%. Board meeting is next week."
+                },
+                "9. Job Application (HR)": {
+                    "subject": "Application: Senior Dev - Alice", 
+                    "body": "I am applying for the Senior Developer role. My resume is attached."
+                },
+                "10. Refund Request (Finance)": {
+                    "subject": "Refund for Order #12345", 
+                    "body": "I was charged twice for my order. Please refund the duplicate charge of $50."
+                }
             }
-        }
-        
-        selected_example = st.selectbox("Load Example", list(examples.keys()))
-        
-        if selected_example != "Select an example...":
-            default_sub = examples[selected_example]["subject"]
-            default_body = examples[selected_example]["body"]
-        else:
-            default_sub = ""
-            default_body = ""
+            
+            selected_example = st.selectbox("Load Example", list(examples.keys()))
+            
+            if selected_example != "Select an example...":
+                default_sub = examples[selected_example]["subject"]
+                default_body = examples[selected_example]["body"]
+            else:
+                default_sub = ""
+                default_body = ""
+
+        with tab2:
+            st.markdown("Fetch recent emails from your Inbox.")
+            if st.button("🔄 Fetch Recent Emails"):
+                if not (st.session_state.sender_email and st.session_state.sender_password):
+                    st.error("Configure Gmail credentials in sidebar first!")
+                else:
+                    with st.spinner("Connecting to Gmail..."):
+                        success, fetched_emails = fetch_emails(st.session_state.sender_email, st.session_state.sender_password)
+                        if success:
+                            st.session_state.fetched_emails = fetched_emails
+                            st.success(f"Fetched {len(fetched_emails)} emails.")
+                        else:
+                            st.error(f"Failed: {fetched_emails}")
+            
+            if 'fetched_emails' in st.session_state:
+                email_options = {f"{i+1}. {e['subject'][:40]}...": i for i, e in enumerate(st.session_state.fetched_emails)}
+                selected_live = st.selectbox("Select Email", list(email_options.keys()))
+                if selected_live:
+                    idx = email_options[selected_live]
+                    default_sub = st.session_state.fetched_emails[idx]['subject']
+                    default_body = st.session_state.fetched_emails[idx]['body']
 
         with st.container():
             st.markdown('<div class="email-card">', unsafe_allow_html=True)
-            subject = st.text_input("Subject", value=default_sub)
-            body = st.text_area("Body", value=default_body, height=250)
+            # Use session state to persist manual edits if needed, but overwrite on selection
+            if 'current_subject' not in st.session_state: st.session_state.current_subject = ""
+            if 'current_body' not in st.session_state: st.session_state.current_body = ""
+            
+            # Update if defaults changed (from selection)
+            if default_sub: st.session_state.current_subject = default_sub
+            if default_body: st.session_state.current_body = default_body
+
+            subject = st.text_input("Subject", value=st.session_state.current_subject)
+            body = st.text_area("Body", value=st.session_state.current_body, height=250)
             st.markdown('</div>', unsafe_allow_html=True)
             
         analyze_btn = st.button("🔍 Analyze Email", type="primary")
@@ -266,6 +378,9 @@ def main_app():
                         error_msg = str(e)
                         if "429" in error_msg or "Quota exceeded" in error_msg:
                             st.error("🚨 Quota Exceeded! Try a different model.")
+                        elif "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
+                            st.error("🚨 Invalid API Key!")
+                            st.warning("Please check your Google Gemini API Key in the sidebar settings. Ensure there are no extra spaces.")
                         else:
                             st.error(f"Error: {error_msg}")
 
@@ -279,13 +394,20 @@ def main_app():
             if target_email:
                 st.info(f"Ready to forward to **{target_dept}** ({target_email})")
                 if st.button(f"📧 Forward to {target_dept}"):
-                    if not (sender_email and sender_password):
+                    if not (st.session_state.sender_email and st.session_state.sender_password):
                         st.error("Please configure your Gmail credentials in the sidebar first.")
                     else:
                         with st.spinner(f"Sending to {target_email}..."):
-                            success, msg = send_email(sender_email, sender_password, target_email, st.session_state.last_subject, st.session_state.last_body)
-                            if success: st.success(msg)
-                            else: st.error(msg)
+                            success, msg = send_email(st.session_state.sender_email, st.session_state.sender_password, target_email, st.session_state.last_subject, st.session_state.last_body)
+                            if success: 
+                                st.success(msg)
+                            else:
+                                if "535" in msg:
+                                    st.error("🚨 Gmail Authentication Failed (Error 535)")
+                                    st.warning("This usually means you are using your **Login Password** instead of an **App Password**.")
+                                    st.markdown("👉 [Click here for the App Password Guide](https://support.google.com/accounts/answer/185833)")
+                                else:
+                                    st.error(msg)
             else:
                 st.warning(f"⚠️ No email configured for **{target_dept}**.")
                 st.markdown("👉 Please add an email address for this department in the **Department Setup** sidebar.")

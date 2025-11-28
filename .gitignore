@@ -32,3 +32,6 @@ ENV/
 # IDE
 .vscode/
 .idea/
+
+# Local Config
+user_config.json
