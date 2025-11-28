@@ -184,16 +184,21 @@ def main_app():
                 st.session_state.api_key = api_key_input
                 genai.configure(api_key=st.session_state.api_key)
                 
+                models = ["models/gemini-1.5-flash"]
                 try:
                     # List only Gemini models that support generateContent
-                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and m.name.startswith('models/gemini-')]
-                    # Ensure at least a default model is available
-                    if not models:
-                        models = ["models/gemini-1.5-flash"]
-                    st.session_state.model_name = st.selectbox("Select Model", models, index=0)
+                    fetched_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and m.name.startswith('models/gemini-')]
+                    if fetched_models:
+                        models = fetched_models
                 except Exception as e:
                     st.error(f"Failed to list models: {e}")
-                    st.session_state.model_name = "models/gemini-1.5-flash"
+                
+                st.session_state.model_name = st.selectbox("Select Model", models, index=0)
+
+        with st.expander("📧 Gmail Integration", expanded=True):
+            st.info("👉 **Note:** Use a **Google App Password**. [Guide here](https://support.google.com/accounts/answer/185833)")
+            st.session_state.sender_email = st.text_input("Your Gmail Address", value=st.session_state.sender_email)
+            st.session_state.sender_password = st.text_input("App Password (16 chars)", value=st.session_state.sender_password, type="password")
 
         with st.expander("🏢 Department Setup", expanded=True):
             st.markdown("Map departments to email addresses for auto-forwarding.")
